@@ -67,6 +67,8 @@ def _autosize_key_value_sheet(ws):
 def _analysis_source_label(analysis: dict) -> str:
     source = analysis.get("analysis_source") or analysis.get("analysis_mode")
     mode = analysis.get("analysis_mode")
+    if source == "external_cliproxy_static_frame" or mode == "external_static_frame":
+        return "外部CLIProxy静帧"
     if source == "whole_video" or mode == "whole_video_context":
         return "整片上下文"
     if source == "chunk_segment" or mode == "chunk_segment_context":
@@ -106,12 +108,170 @@ def _display_schema_value(value: Any) -> str | float | int | bool:
     return value
 
 
+EXTERNAL_ANALYSIS_SOURCE = "external_cliproxy_static_frame"
+_EPISTEMIC_LABELS = {
+    "observation": "观察",
+    "inference": "推断",
+    "unknown": "未知",
+    "computed": "系统计算",
+}
+
+
+def _external_block(value: Any) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    block = value.get("external_import")
+    if isinstance(block, dict) and block.get("source") == EXTERNAL_ANALYSIS_SOURCE:
+        return block
+    if value.get("analysis_source") == EXTERNAL_ANALYSIS_SOURCE or value.get("analysis_mode") == "external_static_frame":
+        return block if isinstance(block, dict) else {"source": EXTERNAL_ANALYSIS_SOURCE}
+    return None
+
+
+def _epistemic_status(container: Any, path: str) -> str | None:
+    block = _external_block(container)
+    if not block:
+        return None
+    epistemic = block.get("epistemic")
+    if not isinstance(epistemic, dict):
+        return None
+    entry = epistemic.get(path)
+    if isinstance(entry, dict):
+        status = entry.get("status")
+        return status if isinstance(status, str) else None
+    if isinstance(entry, str):
+        return entry
+    return None
+
+
+def _annotated_schema_value(container: Any, path: str, value: Any):
+    shown = _display_schema_value(value)
+    status = _epistemic_status(container, path)
+    if not status:
+        return shown
+    label = _EPISTEMIC_LABELS.get(status, status)
+    if shown == "—":
+        return f"— 〔{label}〕"
+    return f"{shown} 〔{label}〕"
+
+
+def resolve_export_attribution(shots: List[dict], analysis: dict | None, segments: dict | None) -> dict | None:
+    """Describe imported static-frame analysis so exports do not claim the built-in models."""
+    blocks: list[dict] = []
+    shot_blocks: list[dict | None] = []
+    for shot in shots:
+        block = _external_block(shot.get("analysis"))
+        shot_blocks.append(block)
+        if block:
+            blocks.append(block)
+    overall = _external_block(analysis)
+    segment_report = _external_block(segments)
+    if overall:
+        blocks.append(overall)
+    if segment_report:
+        blocks.append(segment_report)
+    if not blocks:
+        return None
+
+    seen: set[float] = set()
+    timestamps: list[float] = []
+    for block in blocks:
+        raw_times = block.get("sampled_timestamps") or []
+        if not isinstance(raw_times, list):
+            continue
+        for raw in raw_times:
+            try:
+                stamp = round(float(raw), 3)
+            except (TypeError, ValueError):
+                continue
+            if stamp in seen:
+                continue
+            seen.add(stamp)
+            timestamps.append(stamp)
+    timestamps.sort()
+
+    external_model = None
+    attribution = None
+    limitations: list[str] = []
+    for block in blocks:
+        model = block.get("external_model")
+        if external_model is None and isinstance(model, str) and model.strip():
+            external_model = model.strip()
+        text = block.get("attribution")
+        if attribution is None and isinstance(text, str) and text.strip():
+            attribution = text.strip()
+        raw_limits = block.get("limitations")
+        if not limitations and isinstance(raw_limits, list):
+            limitations = [str(item) for item in raw_limits]
+    fully_external = bool(shots) and all(block is not None for block in shot_blocks) and overall is not None and segment_report is not None
+    return {
+        "kind": "external" if fully_external else "mixed",
+        "timestamps": timestamps,
+        "external_model": external_model,
+        "limitations": limitations,
+        "attribution": attribution or "外部 CLIProxy 静帧分析。不是 ShotLoom 调用通义千问（Qwen）或 DashScope 生成的。",
+    }
+
+
+def manifest_source_rows(video: dict, attribution: dict | None) -> list[tuple[str, Any]]:
+    if attribution and attribution["kind"] == "external":
+        rows = [
+            ("分析来源", "外部 CLIProxy 静帧分析"),
+            ("覆盖范围", "非穷尽采样（不是逐帧或整段观看）"),
+            ("采样时间戳（秒）", ", ".join(f"{stamp:.3f}" for stamp in attribution["timestamps"]) or "—"),
+            ("运镜", "静帧不能证明摄像机运动；运镜不是观察结论"),
+            ("视觉模型", "未使用 ShotLoom 内置视觉模型"),
+            ("ASR模型", "未使用。静帧导入不含音频，口播、音乐与环境声为未知"),
+            ("限制", "static_frames_cannot_prove_camera_movement; audio_not_sampled; coverage_is_non_exhaustive"),
+            ("归因", attribution["attribution"]),
+        ]
+        if attribution.get("external_model"):
+            rows.append((
+                "客户端申报模型",
+                f"{attribution['external_model']}（经由 CLIProxy 的外部调用，不是本机 DashScope 任务）",
+            ))
+        return rows
+    if attribution and attribution["kind"] == "mixed":
+        vision_name = video.get("vision_model") or "qwen3.7-plus"
+        asr_name = video.get("asr_model") or "qwen3-asr-flash-filetrans"
+        return [
+            ("分析来源", "混合来源"),
+            ("覆盖范围", "外部部分为非穷尽静帧采样"),
+            ("采样时间戳（秒）", ", ".join(f"{stamp:.3f}" for stamp in attribution["timestamps"]) or "—"),
+            ("运镜", "静帧导入不能证明摄像机运动"),
+            ("视觉模型", f"混合来源。外部 CLIProxy 静帧结果不是通义千问或 DashScope 生成的。配置中的视觉模型 {vision_name} 只适用于未标记为外部导入的镜头。"),
+            ("ASR模型", f"外部静帧导入不含音频。配置中的 ASR 模型 {asr_name} 不适用于导入镜头。"),
+            ("归因", attribution["attribution"]),
+        ]
+    return [
+        ("视觉模型", video.get("vision_model") or "qwen3.7-plus"),
+        ("ASR模型", video.get("asr_model") or "qwen3-asr-flash-filetrans"),
+    ]
+
+
+def _write_provenance_sheet(wb: Workbook, video: dict, attribution: dict | None, header_fill, header_font, border) -> None:
+    if not attribution:
+        return
+    ws = wb.create_sheet("外部来源")
+    _style_header_row(ws, ["项", "值"], header_fill, header_font, border)
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 100
+    rows = [("来源标识", EXTERNAL_ANALYSIS_SOURCE)] + manifest_source_rows(video, attribution)
+    for row_i, (key, value) in enumerate(rows, 2):
+        ws.cell(row=row_i, column=1, value=key)
+        ws.cell(row=row_i, column=2, value=value)
+        for cell in ws[row_i]:
+            cell.border = border
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+
 def _export_excel_v2(video: dict, shots: List[dict], analysis: dict, segments: dict | None, schema: dict[str, Any]) -> bytes:
     wb = Workbook()
     header_fill = PatternFill("solid", fgColor="1F3864")
     header_font = Font(color="FFFFFF", bold=True, size=10)
     border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
     scopes = schema.get("scopes") or {}
+    attribution = resolve_export_attribution(shots, analysis, segments)
 
     manifest = wb.active
     manifest.title = "导出说明"
@@ -120,9 +280,8 @@ def _export_excel_v2(video: dict, shots: List[dict], analysis: dict, segments: d
         ("镜头数量", len(shots)),
         ("分析模板", schema.get("name", "")),
         ("Schema版本", schema.get("version", "")),
-        ("视觉模型", video.get("vision_model", "qwen3.7-plus")),
-        ("ASR模型", video.get("asr_model", "qwen3-asr-flash-filetrans")),
     ]
+    manifest_rows.extend(manifest_source_rows(video, attribution))
     for row_i, (key, value) in enumerate(manifest_rows, 1):
         manifest.cell(row=row_i, column=1, value=key)
         manifest.cell(row=row_i, column=2, value=value)
@@ -141,7 +300,7 @@ def _export_excel_v2(video: dict, shots: List[dict], analysis: dict, segments: d
     for row_i, shot in enumerate(shots, 2):
         values = ["", int(shot.get("index", row_i - 2)) + 1, round(float(shot.get("duration") or 0), 3), shot.get("start_time"), shot.get("end_time")]
         result = shot.get("analysis") or {}
-        values.extend(_display_schema_value(_get_path(result, path)) for path, _, _ in shot_leaves)
+        values.extend(_annotated_schema_value(result, path, _get_path(result, path)) for path, _, _ in shot_leaves)
         for col_i, value in enumerate(values, 1):
             if col_i == 1:
                 continue
@@ -163,7 +322,7 @@ def _export_excel_v2(video: dict, shots: List[dict], analysis: dict, segments: d
     _style_header_row(ws_segments, ["段落#", "镜头"] + [label for _, label, _ in segment_leaves], header_fill, header_font, border)
     for row_i, segment in enumerate((segments or {}).get("segments") or [], 2):
         values = [int(segment.get("segment_index", row_i - 2)) + 1, _safe([int(i) + 1 for i in segment.get("shot_indices", [])])]
-        values.extend(_display_schema_value(_get_path(segment, path)) for path, _, _ in segment_leaves)
+        values.extend(_annotated_schema_value(segment, path, _get_path(segment, path)) for path, _, _ in segment_leaves)
         for col_i, value in enumerate(values, 1):
             cell = ws_segments.cell(row=row_i, column=col_i, value=value)
             cell.border = border
@@ -177,7 +336,7 @@ def _export_excel_v2(video: dict, shots: List[dict], analysis: dict, segments: d
     ws_overall.column_dimensions["B"].width = 96
     for row_i, (path, label, _) in enumerate(overall_leaves, 2):
         ws_overall.cell(row=row_i, column=1, value=label)
-        ws_overall.cell(row=row_i, column=2, value=_display_schema_value(_get_path(analysis or {}, path)))
+        ws_overall.cell(row=row_i, column=2, value=_annotated_schema_value(analysis or {}, path, _get_path(analysis or {}, path)))
         for cell in ws_overall[row_i]:
             cell.border = border
             cell.alignment = Alignment(vertical="top", wrap_text=True)
@@ -197,6 +356,8 @@ def _export_excel_v2(video: dict, shots: List[dict], analysis: dict, segments: d
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
+    _write_provenance_sheet(wb, video, attribution, header_fill, header_font, border)
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -205,6 +366,7 @@ def _export_excel_v2(video: dict, shots: List[dict], analysis: dict, segments: d
 def export_excel(video: dict, shots: List[dict], analysis: dict, segments: dict | None = None, schema: dict[str, Any] | None = None) -> bytes:
     if schema and int(schema.get("version") or 1) >= 2:
         return _export_excel_v2(video, shots, analysis, segments, schema)
+    attribution = resolve_export_attribution(shots, analysis, segments)
     wb = Workbook()
 
     # ── Sheet 1: 镜头分析 ──────────────────────────────
@@ -458,6 +620,8 @@ def export_excel(video: dict, shots: List[dict], analysis: dict, segments: dict 
         ("包含内容", "镜头摘要、镜头完整 JSON、整体分析摘要、整体分析完整字段、段落分析摘要、段落分析完整字段"),
         ("说明", "完整字段页会保留自定义 prompt 新增字段，避免导出遗漏分析结果。"),
     ]
+    if attribution:
+        manifest_rows.extend(manifest_source_rows(video, attribution))
     for row_i, (key, value) in enumerate(manifest_rows, 1):
         manifest.cell(row=row_i, column=1, value=key)
         manifest.cell(row=row_i, column=2, value=value)
@@ -466,28 +630,54 @@ def export_excel(video: dict, shots: List[dict], analysis: dict, segments: dict 
             cell.border = border
         manifest.row_dimensions[row_i].height = 28
 
+    _write_provenance_sheet(wb, video, attribution, header_fill, header_font, border)
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
+def _pdf_source_meta(video: dict, schema: dict[str, Any] | None, attribution: dict | None) -> str:
+    schema = schema or {}
+    if attribution and attribution["kind"] == "external":
+        model = ""
+        if attribution.get("external_model"):
+            model = f" · 客户端申报模型 {attribution['external_model']}（外部 CLIProxy 调用，不是本机 DashScope 任务）"
+        stamps = ", ".join(f"{stamp:.3f}" for stamp in attribution["timestamps"]) or "—"
+        return (
+            f"模板：{schema.get('name', '')} · Schema v{schema.get('version', '')} · "
+            "来源：外部 CLIProxy 静帧分析 · 覆盖：非穷尽采样 · "
+            f"采样时间戳（秒）：{stamps} · 视觉：未使用 ShotLoom 内置视觉模型 · "
+            "ASR：未使用（无音频，口播未知） · 静帧不能证明摄像机运动 · "
+            f"不是通义千问或 DashScope 生成{model}"
+        )
+    if attribution:
+        return "来源：混合。外部 CLIProxy 静帧结果不是通义千问或 DashScope 生成的。未标记为外部导入的镜头才可能使用 ShotLoom 内置模型。"
+    return (
+        f"模板：{schema.get('name', '')} · Schema v{schema.get('version', '')} · "
+        f"视觉 {video.get('vision_model', 'qwen3.7-plus')} · ASR {video.get('asr_model', 'qwen3-asr-flash-filetrans')}"
+    )
+
+
 def _export_pdf_html_v2(video: dict, shots: List[dict], analysis: dict, segments: dict | None, schema: dict[str, Any]) -> str:
     scopes = schema.get("scopes") or {}
+    attribution = resolve_export_attribution(shots, analysis, segments)
 
     def esc(value: Any) -> str:
         return html.escape(str(_display_schema_value(value)))
 
-    def render_fields(value: dict[str, Any], fields: list[dict[str, Any]]) -> str:
+    def render_fields(root: dict[str, Any], value: Any, fields: list[dict[str, Any]], prefix: str = "") -> str:
+        current = value if isinstance(value, dict) else {}
         blocks = []
         for field in fields:
+            path = f"{prefix}.{field['key']}" if prefix else field["key"]
             children = field.get("fields") or []
             if children:
-                child_value = value.get(field["key"])
-                child_html = render_fields(child_value if isinstance(child_value, dict) else {}, children)
+                child_html = render_fields(root, current.get(field["key"]), children, path)
                 blocks.append(f'<section><h4>{esc(field["label"])}</h4>{child_html}</section>')
                 continue
-            item = value.get(field["key"])
-            blocks.append(f'<div class="field"><b>{esc(field["label"])}</b><span>{esc(item)}</span></div>')
+            shown = _annotated_schema_value(root, path, current.get(field["key"]))
+            blocks.append(f'<div class="field"><b>{esc(field["label"])}</b><span>{esc(shown)}</span></div>')
         return "".join(blocks)
 
     shot_cards = []
@@ -497,19 +687,21 @@ def _export_pdf_html_v2(video: dict, shots: List[dict], analysis: dict, segments
         if path and Path(path).exists():
             with open(path, "rb") as file:
                 thumb = '<img src="data:image/jpeg;base64,' + base64.b64encode(file.read()).decode() + '">'
+        analysis_root = shot.get("analysis") or {}
         shot_cards.append(
             f'<article class="card"><header>{thumb}<div><h3>镜头 #{int(shot.get("index", 0)) + 1}</h3>'
             f'<p>{float(shot.get("start_time", 0)):.3f}s → {float(shot.get("end_time", 0)):.3f}s · {float(shot.get("duration", 0)):.3f}s</p></div></header>'
-            f'{render_fields(shot.get("analysis") or {}, scopes.get("shot") or [])}</article>'
+            f'{render_fields(analysis_root, analysis_root, scopes.get("shot") or [])}</article>'
         )
     segment_cards = []
     for segment in (segments or {}).get("segments") or []:
         indices = "、".join(f"#{int(index) + 1}" for index in segment.get("shot_indices", []))
         segment_cards.append(
             f'<article class="card"><h3>段落 #{int(segment.get("segment_index", 0)) + 1}</h3><p>镜头：{esc(indices)}</p>'
-            f'{render_fields(segment, scopes.get("segment") or [])}</article>'
+            f'{render_fields(segment, segment, scopes.get("segment") or [])}</article>'
         )
-    overall_html = render_fields(analysis or {}, scopes.get("overall") or [])
+    overall_root = analysis or {}
+    overall_html = render_fields(overall_root, overall_root, scopes.get("overall") or [])
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>
 @page{{size:A4;margin:15mm}}*{{box-sizing:border-box}}body{{font-family:'WenQuanYi Zen Hei','DejaVu Sans',sans-serif;color:#202034;font-size:11px}}
 h1{{color:#1f3864;border-bottom:3px solid #4f46e5;padding-bottom:8px}}h2{{color:#312e81;margin-top:20px}}h3{{margin:4px 0;color:#312e81}}h4{{margin:10px 0 4px;color:#4338ca}}
@@ -517,7 +709,7 @@ h1{{color:#1f3864;border-bottom:3px solid #4f46e5;padding-bottom:8px}}h2{{color:
 header{{display:flex;gap:12px}}header img{{width:120px;height:68px;object-fit:cover;border-radius:4px}}section{{background:#f7f7fc;padding:7px;margin-top:7px;border-radius:5px}}
 .field{{display:grid;grid-template-columns:120px 1fr;gap:8px;border-bottom:1px solid #ececf3;padding:4px 0;overflow-wrap:anywhere}}.field b{{color:#4b5563}}.field span{{white-space:pre-wrap}}
 </style></head><body><h1>短视频分析报告 — {esc(video.get('filename', ''))}</h1>
-<p class="meta">模板：{esc(schema.get('name', ''))} · Schema v{esc(schema.get('version', ''))} · 视觉 {esc(video.get('vision_model', 'qwen3.7-plus'))} · ASR {esc(video.get('asr_model', 'qwen3-asr-flash-filetrans'))}</p>
+<p class="meta">{esc(_pdf_source_meta(video, schema, attribution))}</p>
 <h2>镜头分析</h2>{''.join(shot_cards)}<h2>段落分析</h2>{''.join(segment_cards) or '<p>暂无段落</p>'}
 <h2>整体分析</h2><article class="card">{overall_html or '<p>暂无整体分析</p>'}</article></body></html>"""
 
@@ -527,6 +719,8 @@ def export_pdf_html(video: dict, shots: List[dict], analysis: dict, segments: di
 
     if schema and int(schema.get("version") or 1) >= 2:
         return _export_pdf_html_v2(video, shots, analysis, segments, schema)
+
+    attribution = resolve_export_attribution(shots, analysis, segments)
 
     def thumb_b64(path):
         if path and Path(path).exists():
@@ -699,10 +893,11 @@ def export_pdf_html(video: dict, shots: List[dict], analysis: dict, segments: di
 </style>
 </head>
 <body>
-<h1>拉片报告 — {video.get('filename','')}</h1>
+<h1>拉片报告 — {html.escape(str(video.get('filename','')))}</h1>
 <p style="color:#6b7280;margin-bottom:20px">
   时长：{video.get('duration',0):.1f}s &nbsp;|&nbsp; 共 {len(shots)} 个镜头
 </p>
+{f'<p style="color:#6b7280;margin-bottom:20px">{html.escape(_pdf_source_meta(video, None, attribution))}</p>' if attribution else ''}
 {shot_cards}
 {segments_html}
 {overall_html}

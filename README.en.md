@@ -29,6 +29,7 @@ ShotLoom combines "shot" and "loom": it weaves individual cuts into a readable, 
 - Real-time progress: streams analysis progress through SSE and can recover active task state after page refresh.
 - Users and credits: email/password login, optional WeChat login, credit deduction, and admin credit setting. Built-in email registration does not verify email addresses yet.
 - Report export: exports Excel and PDF reports.
+- External still-frame import: a video owner can store CLIProxy static-frame analysis on shots, segments, and the overall report, then export it with the native workbook. See `docs/external-analysis-import.md`. Stills cannot prove camera movement, and missing audio stays unknown.
 - Admin console: lets admins inspect users, videos, credit transactions, and account status.
 
 ## Tech Stack

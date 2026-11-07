@@ -19,6 +19,7 @@ FIELD_SOURCES = {"vision", "asr", "computed"}
 RESERVED_KEYS = {
     "error", "analysis_source", "analysis_mode", "shot_indices", "shot_index",
     "segment_index", "transcript_assignment", "context_shot_summaries",
+    "external_import",
 }
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 SCOPE_LIMITS = {"shot": 80, "segment": 40, "overall": 40}

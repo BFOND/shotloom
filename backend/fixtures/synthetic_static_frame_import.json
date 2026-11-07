@@ -1,0 +1,332 @@
+{
+  "analysis_config": {
+    "version": 2,
+    "name": "摄影与节奏气质",
+    "description": "只记录静帧能够支持的景别、构图、光色、节奏线索和情绪气质。",
+    "language": "中文",
+    "prompts": {
+      "shot_role": "你是一位摄影与剪辑分析助手。只根据给出的静帧描述景别、构图、光线、色彩和可见的画面气质。",
+      "shot_instructions": "区分观察、推断和未知。静帧不能证明运镜。没有音频时，台词必须标为未知。只讨论景别、构图、光色、节奏和情绪气质。输出与字段定义一致的 JSON。",
+      "segment_role": "你根据一组镜头的采样静帧描述这一段的节奏变化和情绪推进。",
+      "segment_instructions": "只使用提供的镜头编号。采样不是逐帧观看。节奏如果来自采样间隔，标为推断。没有音频就不要描写声音。",
+      "overall_role": "你根据非穷尽的采样静帧总结全片的摄影气质、节奏印象和情绪。",
+      "overall_instructions": "未知保持未知。不要把静帧说成摄像机运动，也不要补写不存在的对白。"
+    },
+    "scopes": {
+      "shot": [
+        {
+          "key": "content",
+          "label": "时间",
+          "fields": [
+            {
+              "key": "time_evidence",
+              "label": "时间证据",
+              "type": "string",
+              "source": "computed",
+              "description": "镜头在成片中的起止时间，由 ShotLoom 按镜头边界填写。"
+            }
+          ]
+        },
+        {
+          "key": "picture",
+          "label": "摄影",
+          "fields": [
+            {
+              "key": "shot_scale",
+              "label": "景别",
+              "type": "string",
+              "source": "vision",
+              "description": "这一张静帧里直接可见的景别。"
+            },
+            {
+              "key": "composition",
+              "label": "构图",
+              "type": "string",
+              "source": "vision",
+              "description": "主体在画幅中的位置和前后层次。"
+            },
+            {
+              "key": "lighting_color",
+              "label": "光线与色彩",
+              "type": "string",
+              "source": "vision",
+              "description": "静帧上可见的光和颜色。"
+            },
+            {
+              "key": "camera_movement",
+              "label": "运镜",
+              "type": "string",
+              "source": "vision",
+              "description": "静帧不能证明运镜，只能标未知，或在证据里明确写成推断。"
+            }
+          ]
+        },
+        {
+          "key": "beat",
+          "label": "节奏与情绪",
+          "fields": [
+            {
+              "key": "pacing",
+              "label": "节奏",
+              "type": "string",
+              "source": "vision",
+              "description": "只能依据采样间隔作推断，不能当成逐帧测量。"
+            },
+            {
+              "key": "mood",
+              "label": "情绪气质",
+              "type": "string",
+              "source": "vision",
+              "description": "画面呈现的情绪气质。解释性判断标为推断。"
+            }
+          ]
+        },
+        {
+          "key": "speech",
+          "label": "声音",
+          "fields": [
+            {
+              "key": "transcript",
+              "label": "台词",
+              "type": "string",
+              "source": "asr",
+              "description": "静帧没有音频，必须标为未知。"
+            }
+          ]
+        }
+      ],
+      "segment": [
+        {
+          "key": "segment_summary",
+          "label": "段落",
+          "fields": [
+            {
+              "key": "title",
+              "label": "标题",
+              "type": "string",
+              "source": "vision",
+              "description": "用采样静帧概括这一段。"
+            },
+            {
+              "key": "rhythm_change",
+              "label": "节奏变化",
+              "type": "string",
+              "source": "vision",
+              "description": "采样帧之间的节奏变化。不是连续观看。"
+            },
+            {
+              "key": "emotional_progression",
+              "label": "情绪推进",
+              "type": "string",
+              "source": "vision",
+              "description": "这一段里情绪气质如何变化。"
+            }
+          ]
+        }
+      ],
+      "overall": [
+        {
+          "key": "reading",
+          "label": "全片阅读",
+          "fields": [
+            {
+              "key": "visual_consistency",
+              "label": "视觉一致性",
+              "type": "string",
+              "source": "vision",
+              "description": "采样静帧之间的摄影是否一致。"
+            },
+            {
+              "key": "pacing_curve",
+              "label": "节奏曲线",
+              "type": "string",
+              "source": "vision",
+              "description": "基于非穷尽采样的节奏印象，不是完整曲线测量。"
+            },
+            {
+              "key": "mood",
+              "label": "情绪气质",
+              "type": "string",
+              "source": "vision",
+              "description": "全片采样呈现的情绪气质。"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "import_request": {
+    "config_revision": 0,
+    "replace_existing": false,
+    "provenance": {
+      "provider": "cliproxy",
+      "method": "static_frame",
+      "coverage": "non_exhaustive",
+      "audio": "absent",
+      "external_model": "synthetic-static-reviewer"
+    },
+    "shots": [
+      {
+        "id": 0,
+        "index": 0,
+        "start_time": 0.0,
+        "end_time": 9.0,
+        "sampled_timestamps": [1.25, 3.5],
+        "analysis": {
+          "picture": {
+            "shot_scale": {
+              "status": "observation",
+              "value": "中景 SYNTH-STATIC-RED-FRAME",
+              "evidence": "人物约占画面高度的一半，身后是均匀红色背景",
+              "frame_time": 1.25
+            },
+            "composition": {
+              "status": "observation",
+              "value": "人物位于画面中央",
+              "evidence": "头部和肩部位于画幅中部",
+              "frame_time": 1.25
+            },
+            "lighting_color": {
+              "status": "observation",
+              "value": "高饱和红底，人物受光较平",
+              "evidence": "背景呈整片红色，没有可见的色块渐变",
+              "frame_time": 1.25
+            },
+            "camera_movement": {
+              "status": "unknown",
+              "value": null,
+              "evidence": "静帧不能证明摄像机运动"
+            }
+          },
+          "beat": {
+            "pacing": {
+              "status": "inference",
+              "value": "两张静帧间隔约两秒，节奏印象偏稳 SYNTH-BEAT-INFERENCE",
+              "evidence": "只比较 1.25 秒和 3.50 秒两张静帧，不是逐帧测量",
+              "frame_time": 3.5
+            },
+            "mood": {
+              "status": "inference",
+              "value": "静止姿态显得安静",
+              "evidence": "由姿势和留白作的气质判断，没有对白可以核对",
+              "frame_time": 1.25
+            }
+          },
+          "speech": {
+            "transcript": {
+              "status": "unknown",
+              "value": null,
+              "evidence": "没有音频"
+            }
+          }
+        }
+      },
+      {
+        "id": 0,
+        "index": 1,
+        "start_time": 10.0,
+        "end_time": 19.0,
+        "sampled_timestamps": [12.0],
+        "analysis": {
+          "picture": {
+            "shot_scale": {
+              "status": "observation",
+              "value": "近景 SYNTH-STATIC-GREEN-FRAME",
+              "evidence": "人物面部占画面的大部分，背景是均匀绿色",
+              "frame_time": 12.0
+            },
+            "composition": {
+              "status": "observation",
+              "value": "面部略偏画面左侧",
+              "evidence": "鼻子和眼睛位于中线左侧",
+              "frame_time": 12.0
+            },
+            "lighting_color": {
+              "status": "observation",
+              "value": "绿色背景，面部亮度均匀",
+              "evidence": "背景是一整块绿色",
+              "frame_time": 12.0
+            },
+            "camera_movement": {
+              "status": "unknown",
+              "value": null,
+              "evidence": "静帧不能证明摄像机运动"
+            }
+          },
+          "beat": {
+            "pacing": {
+              "status": "inference",
+              "value": "这一镜只有一张采样静帧，节奏无法测量",
+              "evidence": "单张静帧不能显示快慢，只能说明这里没有足够样本",
+              "frame_time": 12.0
+            },
+            "mood": {
+              "status": "inference",
+              "value": "靠近的面孔让情绪更集中",
+              "evidence": "由景别变近作出的判断，不是听到的情绪",
+              "frame_time": 12.0
+            }
+          },
+          "speech": {
+            "transcript": {
+              "status": "unknown",
+              "value": null,
+              "evidence": "没有音频"
+            }
+          }
+        }
+      }
+    ],
+    "segments": [
+      {
+        "segment_index": 0,
+        "shot_indices": [0, 1],
+        "sampled_timestamps": [1.25, 12.0],
+        "analysis": {
+          "segment_summary": {
+            "title": {
+              "status": "observation",
+              "value": "红场切到绿场 SYNTH-SEGMENT-BEAT",
+              "evidence": "1.25 秒是红底，12 秒是绿底",
+              "frame_time": 1.25
+            },
+            "rhythm_change": {
+              "status": "inference",
+              "value": "采样从红底中景跳到绿底近景，中间有一次明显切换",
+              "evidence": "依据两张采样静帧的景别和颜色差异，不是连续观看",
+              "frame_time": 12.0
+            },
+            "emotional_progression": {
+              "status": "inference",
+              "value": "从留白较多的红场转到更贴近的绿场",
+              "evidence": "情绪判断来自景别靠近，不是声音",
+              "frame_time": 12.0
+            }
+          }
+        }
+      }
+    ],
+    "overall_analysis": {
+      "reading": {
+        "visual_consistency": {
+          "status": "observation",
+          "value": "两张采样静帧都是纯色背景前的单人",
+          "evidence": "红底与绿底都把人物放在纯色前面",
+          "frame_time": 1.25
+        },
+        "pacing_curve": {
+          "status": "inference",
+          "value": "采样点之间有一次景别跳变，谈不上完整节奏曲线",
+          "evidence": "只有三张静帧，不能画出连续节奏",
+          "frame_time": 3.5
+        },
+        "mood": {
+          "status": "inference",
+          "value": "颜色对比强烈但人物姿态安静 SYNTH-OVERALL-BLUE-MOOD",
+          "evidence": "综合红、绿两场静帧的气质，蓝色字样只是合成夹具编号",
+          "frame_time": 12.0
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Authenticated `POST /api/results/{video_id}/external-analysis` stores external CLIProxy static-frame analysis on the current shots, segments, and overall report. The request must match shot ids, boundaries, and the draft config revision. Invalid input does not write a partial result. See `docs/external-analysis-import.md`.
+
+### Changed
+- Native Excel and PDF exports label that imported analysis as external static-frame coverage, not as a ShotLoom Qwen or DashScope run. Built-in analysis exports still name the configured vision and ASR models.
+
 ## 0.2.0
 
 ### Added
