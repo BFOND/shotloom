@@ -1,5 +1,8 @@
+from typing import Any, Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 from pathlib import Path
 import av
@@ -10,6 +13,7 @@ from auth import get_current_user
 from permissions import get_video_for_user
 from services.video_path import resolve_video_path
 from services.analysis_config import get_or_create_video_config, video_has_results
+from services.external_analysis_import import ImportRejected, import_external_analysis, provenance_from_stored
 
 router = APIRouter(prefix="/api", tags=["results"])
 
@@ -57,7 +61,86 @@ def get_results(
         "active_config_revision": config_row.active_revision,
         "draft_config_dirty": legacy_results or bool(config_row.active_hash and config_row.active_hash != config_row.draft_hash),
         "transcript_status": transcript.status if transcript else None,
+        "analysis_provenance": provenance_from_stored(
+            [s.analysis for s in shots],
+            va.continuity_report if va else None,
+            va.segments_report if va else None,
+        ),
     }
+
+
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExternalProvenanceIn(_StrictModel):
+    provider: Literal["cliproxy"]
+    method: Literal["static_frame"]
+    coverage: Literal["non_exhaustive"]
+    audio: Literal["absent"]
+    external_model: str | None = None
+
+    @field_validator("external_model")
+    @classmethod
+    def _clean_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = " ".join(str(value).split())
+        if not text:
+            return None
+        if len(text) > 80:
+            raise ValueError("external_model 最长 80 个字符")
+        if any(ord(char) < 32 for char in text):
+            raise ValueError("external_model 含有控制字符")
+        return text
+
+
+class ExternalShotIn(_StrictModel):
+    id: int
+    index: int
+    start_time: float
+    end_time: float
+    sampled_timestamps: list[float] = Field(min_length=1, max_length=24)
+    analysis: dict[str, Any]
+
+
+class ExternalSegmentIn(_StrictModel):
+    segment_index: int
+    shot_indices: list[int] = Field(min_length=1)
+    sampled_timestamps: list[float] = Field(min_length=1, max_length=48)
+    analysis: dict[str, Any]
+
+
+class ExternalAnalysisImportRequest(_StrictModel):
+    config_revision: int
+    replace_existing: bool = False
+    provenance: ExternalProvenanceIn
+    shots: list[ExternalShotIn] = Field(min_length=1)
+    segments: list[ExternalSegmentIn] = Field(min_length=1)
+    overall_analysis: dict[str, Any]
+
+
+@router.post("/results/{video_id}/external-analysis")
+def import_external_shot_analysis(
+    video_id: int,
+    body: ExternalAnalysisImportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Persist external CLIProxy static-frame analysis for the native exporter.
+
+    The route does not call a model. It checks ownership, shot identity, boundaries,
+    and the video's current analysis-config revision, then writes shot, segment, and
+    overall analysis in one transaction.
+    """
+    video = get_video_for_user(video_id, current_user, db)
+    try:
+        result = import_external_analysis(video, body.model_dump(), db)
+        db.commit()
+    except ImportRejected as exc:
+        db.rollback()
+        raise HTTPException(exc.status_code, detail=exc.detail) from exc
+    return result
 
 
 @router.get("/video-file/{video_id}")

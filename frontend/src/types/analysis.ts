@@ -146,6 +146,20 @@ export interface AnalysisResult {
   config_revision?: number
   draft_config_dirty?: boolean
   transcript_status?: string | null
+  analysis_provenance?: {
+    source?: string
+    provider?: string
+    method?: string
+    coverage?: string
+    audio?: string
+    camera_movement?: string
+    attribution?: string
+    config_revision?: number
+    sampled_timestamps?: number[]
+    external_model?: string | null
+    imported_at?: string
+    limitations?: string[]
+  } | null
 }
 
 export type AnalysisFieldType = 'string' | 'number' | 'boolean' | 'string_array' | 'object' | 'object_array'
